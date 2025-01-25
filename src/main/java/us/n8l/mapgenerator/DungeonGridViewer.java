@@ -1,6 +1,7 @@
 package us.n8l.mapgenerator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import java.awt.*;
@@ -9,29 +10,32 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.logging.Logger;
 
-/**
- * A Swing-based viewer that:
- *  - Generates & fits a dungeon (Regenerate button)
- *  - Displays the cells in a scrollable panel
- *  - Allows saving/loading of the fitted grid & room metadata in JSON
- *  - Allows saving a PNG screenshot
- */
 public class DungeonGridViewer extends JFrame {
 
-    private final AdvancedDungeonGenerator generator;  // For random dungeon generation
-    private Dungeon dungeon;                           // Current dungeon object
-    private DungeonGridFitter fitter;                  // Current fitter
-    private Rectangle bounds;        // Current bounding rectangle
+    private static final Logger LOG = Logger.getLogger(DungeonGridViewer.class.getName());
 
-    // The drawing panel which shows the dungeon as a colored grid
+    // The random dungeon generator
+    private final AdvancedDungeonGenerator generator;
+
+    // The current in-memory dungeon object
+    private Dungeon dungeon;
+
+    // The current fitter (BFS or A*), and bounding rectangle
+    private DungeonFitter fitter;
+    private Rectangle bounds;
+
+    // Panel to display the cells
     private final DungeonPanel dungeonPanel;
+
+    // Jackson for JSON load/save
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
     // Each cell is drawn as a square of this many pixels
     private static final int CELL_SIZE = 16;
-
-    // Jackson ObjectMapper for reading/writing JSON
-    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public DungeonGridViewer(AdvancedDungeonGenerator generator) {
         this.generator = generator;
@@ -40,7 +44,7 @@ public class DungeonGridViewer extends JFrame {
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
 
-        // Center: scrollable panel with the dungeon display
+        // Center: scrollable panel for dungeon
         dungeonPanel = new DungeonPanel();
         JScrollPane scrollPane = new JScrollPane(dungeonPanel);
         add(scrollPane, BorderLayout.CENTER);
@@ -49,70 +53,109 @@ public class DungeonGridViewer extends JFrame {
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 5));
 
         // 1) Regenerate button
-        JButton regenerateButton = new JButton("Regenerate");
-        regenerateButton.addActionListener(this::onRegenerate);
-        buttonPanel.add(regenerateButton);
+        JButton regenerateBtn = new JButton("Regenerate");
+        regenerateBtn.addActionListener(this::onRegenerate);
+        buttonPanel.add(regenerateBtn);
 
-        // 2) Save PNG button
-        JButton savePngButton = new JButton("Save as PNG");
-        savePngButton.addActionListener(this::onSaveAsPNG);
-        buttonPanel.add(savePngButton);
+        // 2) Fit with BFS
+        JButton fitBFSBtn = new JButton("Fit with BFS");
+        fitBFSBtn.addActionListener(this::onFitWithBFS);
+        buttonPanel.add(fitBFSBtn);
 
-        // 3) Save JSON button
-        JButton saveJsonButton = new JButton("Save JSON");
-        saveJsonButton.addActionListener(this::onSaveAsJSON);
-        buttonPanel.add(saveJsonButton);
+        // 3) Fit with AStar
+        JButton fitAStarBtn = new JButton("Fit with AStar");
+        fitAStarBtn.addActionListener(this::onFitWithAStar);
+        buttonPanel.add(fitAStarBtn);
 
-        // 4) Load JSON button
-        JButton loadJsonButton = new JButton("Load JSON");
-        loadJsonButton.addActionListener(this::onLoadJSON);
-        buttonPanel.add(loadJsonButton);
+        // 4) Save PNG
+        JButton savePngBtn = new JButton("Save as PNG");
+        savePngBtn.addActionListener(this::onSaveAsPNG);
+        buttonPanel.add(savePngBtn);
+
+        // 5) Save JSON
+        JButton saveJsonBtn = new JButton("Save JSON");
+        saveJsonBtn.addActionListener(this::onSaveAsJSON);
+        buttonPanel.add(saveJsonBtn);
+
+        // 6) Load JSON
+        JButton loadJsonBtn = new JButton("Load JSON");
+        loadJsonBtn.addActionListener(this::onLoadJSON);
+        buttonPanel.add(loadJsonBtn);
 
         add(buttonPanel, BorderLayout.SOUTH);
 
-        // Generate the initial dungeon
-        regenerateDungeon();
+        // Initially, generate a dungeon and fit with BFS by default (or none)
+        regenerateDungeon(); // creates a new dungeon
+        // (You could choose not to fit until user clicks BFS or AStar.)
 
-        // Final window setup
         pack();
         setLocationRelativeTo(null);
         setVisible(true);
     }
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    //                    REGENERATE
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //               REGENERATE
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     private void onRegenerate(ActionEvent e) {
         regenerateDungeon();
     }
 
     private void regenerateDungeon() {
-        // 1) Generate new dungeon
+        LOG.info("Regenerating a new dungeon...");
         dungeon = generator.generateDungeon();
+        // Let's not fit automatically here, so the user can choose BFS or A*
+        // If you prefer an immediate fit, call onFitWithBFS(null) or onFitWithAStar(null).
+        clearFitterData();
+    }
 
-        // 2) Fit the dungeon
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //               FIT WITH BFS
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    private void onFitWithBFS(ActionEvent e) {
+        if (dungeon == null) {
+            LOG.warning("No dungeon in memory to fit!");
+            return;
+        }
+        LOG.info("Fitting dungeon with BFS approach...");
         fitter = new DungeonGridFitter();
         bounds = fitter.fitDungeon(dungeon);
-
-        // 3) Resize panel & repaint
         updatePanelSizeAndRepaint();
     }
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    //                    SAVE PNG
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    private void onSaveAsPNG(ActionEvent e) {
-        JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setSelectedFile(new File("dungeon.png"));
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //               FIT WITH A*
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    private void onFitWithAStar(ActionEvent e) {
+        if (dungeon == null) {
+            LOG.warning("No dungeon in memory to fit!");
+            return;
+        }
+        LOG.info("Fitting dungeon with A* approach...");
+        fitter = new AStarDungeonGridFitter();
+        bounds = fitter.fitDungeon(dungeon);
+        updatePanelSizeAndRepaint();
+    }
 
-        int choice = fileChooser.showSaveDialog(this);
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //               SAVE PNG
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    private void onSaveAsPNG(ActionEvent e) {
+        if (fitter == null) {
+            JOptionPane.showMessageDialog(this,
+                    "No fitted layout to save. Fit the dungeon first.",
+                    "No Fitter",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        JFileChooser fc = new JFileChooser();
+        fc.setSelectedFile(new File("dungeon.png"));
+        int choice = fc.showSaveDialog(this);
         if (choice == JFileChooser.APPROVE_OPTION) {
-            File outputFile = fileChooser.getSelectedFile();
-            savePanelAsPNG(dungeonPanel, outputFile);
+            savePanelAsPNG(dungeonPanel, fc.getSelectedFile());
         }
     }
 
-    private void savePanelAsPNG(JPanel panel, File file) {
+    private void savePanelAsPNG(JPanel panel, File outFile) {
         BufferedImage image = new BufferedImage(
                 panel.getWidth(),
                 panel.getHeight(),
@@ -123,309 +166,249 @@ public class DungeonGridViewer extends JFrame {
         g2.dispose();
 
         try {
-            ImageIO.write(image, "png", file);
+            ImageIO.write(image, "png", outFile);
             JOptionPane.showMessageDialog(this,
-                    "Saved PNG to " + file.getAbsolutePath(),
-                    "Save Successful",
+                    "Saved to " + outFile.getAbsolutePath(),
+                    "PNG Saved",
                     JOptionPane.INFORMATION_MESSAGE);
         } catch (IOException ex) {
             ex.printStackTrace();
             JOptionPane.showMessageDialog(this,
-                    "Error saving PNG: " + ex.getMessage(),
+                    "Error: " + ex.getMessage(),
                     "Save Error",
                     JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    //                    SAVE JSON
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //               SAVE JSON
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     private void onSaveAsJSON(ActionEvent e) {
-        JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setSelectedFile(new File("dungeon.json"));
-
-        int choice = fileChooser.showSaveDialog(this);
+        if (fitter == null) {
+            JOptionPane.showMessageDialog(this,
+                    "No fitted layout to save. Fit the dungeon first.",
+                    "No Fitter",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        JFileChooser fc = new JFileChooser();
+        fc.setSelectedFile(new File("dungeon.json"));
+        int choice = fc.showSaveDialog(this);
         if (choice == JFileChooser.APPROVE_OPTION) {
-            File outputFile = fileChooser.getSelectedFile();
-            saveDungeonAsJSON(outputFile);
+            File outFile = fc.getSelectedFile();
+            saveDungeonAsJSON(outFile);
         }
     }
 
-    /**
-     * Collects the fitted grid + room metadata into a JSON structure
-     * and writes it to file.
-     */
-    private void saveDungeonAsJSON(File file) {
+    private void saveDungeonAsJSON(File outFile) {
         try {
-            // 1) Build a data object that has all info we need
             DungeonGridData data = buildDungeonGridData();
-
-            // 2) Write as JSON
-            objectMapper.writerWithDefaultPrettyPrinter()
-                        .writeValue(file, data);
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(outFile, data);
 
             JOptionPane.showMessageDialog(this,
-                    "Saved JSON to " + file.getAbsolutePath(),
-                    "Save Successful",
+                    "Saved JSON to " + outFile.getAbsolutePath(),
+                    "JSON Saved",
                     JOptionPane.INFORMATION_MESSAGE);
         } catch (IOException ex) {
             ex.printStackTrace();
             JOptionPane.showMessageDialog(this,
-                    "Error saving JSON: " + ex.getMessage(),
+                    "Error: " + ex.getMessage(),
                     "Save Error",
                     JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    /**
-     * Build a data object that holds:
-     *  - bounding rectangle
-     *  - list of GridCellDto (x, y, cellType, roomId)
-     *  - list of room metadata (id, shape, dimensions)
-     */
+    // Gathers the bounding rect and all cells from the fitter
+    // plus a list of rooms from the dungeon.
     private DungeonGridData buildDungeonGridData() {
         DungeonGridData data = new DungeonGridData();
-
-        // 1) bounding rectangle
         if (bounds != null) {
             data.rect = new RectDto(bounds.x, bounds.y, bounds.width, bounds.height);
         }
-
-        // 2) all cells
         if (fitter != null) {
-            List<GridCellDto> cellList = new ArrayList<>();
-            for (GridCell cell : fitter.getAllCells()) {
+            List<GridCellDto> cellDtos = new ArrayList<>();
+            for (GridCell c : fitter.getAllCells()) {
                 GridCellDto dto = new GridCellDto();
-                dto.x = cell.getCoordinate().x;
-                dto.y = cell.getCoordinate().y;
-                dto.roomId = cell.getRoomId();
-                dto.cellType = cell.getCellType().name(); // store as string
-                cellList.add(dto);
+                dto.x = c.getCoordinate().x;
+                dto.y = c.getCoordinate().y;
+                dto.roomId = c.getRoomId();
+                dto.cellType = c.getCellType().name();
+                cellDtos.add(dto);
             }
-            data.cells = cellList;
+            data.cells = cellDtos;
         }
-
-        // 3) room metadata from the Dungeon
         if (dungeon != null) {
-            List<RoomDto> roomList = new ArrayList<>();
+            List<RoomDto> roomDtos = new ArrayList<>();
             for (Room r : dungeon.getRooms()) {
                 RoomDto rd = new RoomDto();
                 rd.id = r.getId();
                 rd.shape = (r.getShape() != null) ? r.getShape().name() : null;
                 rd.dimensions = r.getDimensions();
-                roomList.add(rd);
+                roomDtos.add(rd);
             }
-            data.rooms = roomList;
+            data.rooms = roomDtos;
         }
-
         return data;
     }
 
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    //                    LOAD JSON
-    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //               LOAD JSON
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     private void onLoadJSON(ActionEvent e) {
-        JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setSelectedFile(new File("dungeon.json"));
-
-        int choice = fileChooser.showOpenDialog(this);
+        JFileChooser fc = new JFileChooser();
+        fc.setSelectedFile(new File("dungeon.json"));
+        int choice = fc.showOpenDialog(this);
         if (choice == JFileChooser.APPROVE_OPTION) {
-            File inputFile = fileChooser.getSelectedFile();
-            loadDungeonFromJSON(inputFile);
+            loadDungeonFromJSON(fc.getSelectedFile());
         }
     }
 
-    /**
-     * Reads the JSON data, reconstructs a "fitted" grid
-     * (no new generation or fitting needed), and displays it.
-     */
-    private void loadDungeonFromJSON(File file) {
+    private void loadDungeonFromJSON(File inFile) {
         try {
-            DungeonGridData data = objectMapper.readValue(file, DungeonGridData.class);
+            DungeonGridData data = objectMapper.readValue(inFile, DungeonGridData.class);
 
-            // 1) Rebuild bounding rect
-            if (data.rect != null) {
-                bounds = new Rectangle(
-                        data.rect.x, data.rect.y, data.rect.width, data.rect.height);
-            }
-
-            // 2) Rebuild the fitter's cells
-            //    We'll create a brand new fitter object and fill it with cells from JSON
-            fitter = new DungeonGridFitter();
-
-            if (data.cells != null) {
-                for (GridCellDto dto : data.cells) {
-                    // Create or get cell
-                    GridCell cell = getOrCreateFitterCell(dto.x, dto.y);
-                    // Set fields
-                    cell.setRoomId(dto.roomId);
-                    cell.setCellType(Enum.valueOf(GridCell.CellType.class, dto.cellType));
-                }
-            }
-
-            // 3) Rebuild the Dungeon's rooms (if we want to see them in the "dungeon" object).
-            //    This is optional, but let's do it so we can maintain that data in memory.
+            // rebuild dungeon: new memory
             dungeon = new Dungeon();
+            // Rebuild rooms
             if (data.rooms != null) {
                 for (RoomDto rd : data.rooms) {
-                    // Recreate the Room object
-                    // We'll assume the shape enum is the same as in your code (RoomShape).
-                    // If so, parse it. If null, default to something.
                     RoomShape shape;
                     try {
-                        shape = (rd.shape != null)
-                              ? RoomShape.valueOf(rd.shape)
-                              : RoomShape.UNUSUAL; // fallback
+                        shape = (rd.shape != null) ? RoomShape.valueOf(rd.shape) : RoomShape.UNUSUAL;
                     } catch (Exception ex) {
                         shape = RoomShape.UNUSUAL;
                     }
-
+                    // We'll create a new Room, hack the id if needed
                     Room newRoom = new Room(shape, rd.dimensions) {
                         @Override
                         public int getId() {
-                            return rd.id; // override to keep the same ID
+                            return rd.id;
                         }
                     };
-                    // We do a small trick above, or we could hack the static ID counter.
-                    // For robust usage, you might adjust your Room class so you can set the ID.
-
-                    // Add the room to the dungeon
                     dungeon.addRoom(newRoom);
                 }
             }
 
-            // 4) Update the panel
-            updatePanelSizeAndRepaint();
+            // We'll keep the cell data for the fitter, but to unify with BFS/AStar approach,
+            // let's just store them in a separate map so we can display them if we want
+            // OR we can choose to re-fit.
+            // If you want to load the exact cell layout, you'd need a specialized approach
+            // (like we did before), because BFS or AStar might recalc.
+            // For now, let's just store them in memory to display:
+            //
+            loadedCells.clear();
+            if (data.cells != null) {
+                for (GridCellDto dto : data.cells) {
+                    loadedCells.add(dto);
+                }
+            }
+
+            // bounding rect from file
+            if (data.rect != null) {
+                loadedBounds = new Rectangle(
+                        data.rect.x, data.rect.y, data.rect.width, data.rect.height);
+            } else {
+                loadedBounds = null;
+            }
+
+            // Clear the current fitter data => we have a new dungeon
+            // (the user can now choose BFS or AStar if they want to re-fit)
+            clearFitterData();
 
             JOptionPane.showMessageDialog(this,
-                    "Loaded JSON from " + file.getAbsolutePath(),
+                    "Loaded JSON from: " + inFile.getAbsolutePath(),
                     "Load Successful",
                     JOptionPane.INFORMATION_MESSAGE);
-
         } catch (IOException ex) {
             ex.printStackTrace();
             JOptionPane.showMessageDialog(this,
-                    "Error loading JSON: " + ex.getMessage(),
+                    "Error loading: " + ex.getMessage(),
                     "Load Error",
                     JOptionPane.ERROR_MESSAGE);
         }
     }
 
+    // If you want to display the loaded cells exactly, you'd do it in the panel
+    // if there's no new fitter. We'll keep them in memory and draw them if no fitter is chosen.
+    private final List<GridCellDto> loadedCells = new ArrayList<>();
+    private Rectangle loadedBounds = null;
+
     /**
-     * Creates or gets a cell from the fitter’s map in O(1).
-     * Since DungeonGridFitter’s map is private, we replicate the logic here
-     * or add a public method in DungeonGridFitter to do it for us.
-     * For demonstration, we do it inline:
+     * Clears the current fitter, so we revert to no fitted data.
      */
-    private GridCell getOrCreateFitterCell(int x, int y) {
-        // If you have a public method in DungeonGridFitter, call it.
-        // Otherwise, we replicate the internal code:
-        //   e.g. fitter.getCell(x,y) or fitter.getOrCreateCell(x,y)
-        //
-        // For demonstration, we do something like:
-
-        // We do a quick linear search. Not super efficient for large maps,
-        // but for demonstration it's fine.
-        // ***Better approach***: add a public getOrCreateCell(x,y) method in DungeonGridFitter.
-
-        for (GridCell c : fitter.getAllCells()) {
-            if (c.getCoordinate().x == x && c.getCoordinate().y == y) {
-                return c;
-            }
-        }
-        // Not found -> create a new one. We can replicate the code
-        // "gridMap.put(...)" if we had access, but it's private.
-        // So we do a small reflection or some hack.
-        // For demonstration, let's do a new GridCell, store it in a local list.
-        // Then we won't actually store it in fitter's map.
-        // => This means we can't handle BFS or corridor modifications after load
-        // This is a limitation of not exposing the map.
-        //
-        // Ideally, you'd modify DungeonGridFitter with a public method:
-        //     public GridCell getOrCreateCell(int x, int y) { ... }
-        //
-        // We'll do a compromise:
-        GridCell newCell = new GridCell(x, y);
-        // We can do a quick hack: reflect into the 'gridMap' if you want.
-        // Or store them in a local map inside the viewer.
-        // For simplicity, let's store in a local map:
-        loadedCells.add(newCell);
-        return newCell;
+    private void clearFitterData() {
+        fitter = null;
+        bounds = null;
+        updatePanelSizeAndRepaint();
     }
 
-    // We'll store newly created cells here
-    private final List<GridCell> loadedCells = new ArrayList<>();
-
     /**
-     * Recompute panel size based on bounding rectangle and repaint.
+     * Adjust dungeonPanel's size and repaint.
      */
     private void updatePanelSizeAndRepaint() {
-        if (bounds != null) {
-            int prefWidth = bounds.width * CELL_SIZE + 1;
-            int prefHeight = bounds.height * CELL_SIZE + 1;
-            dungeonPanel.setPreferredSize(new Dimension(prefWidth, prefHeight));
+        // If we have a fitter & bounds, size accordingly
+        if (fitter != null && bounds != null) {
+            int w = bounds.width * CELL_SIZE + 1;
+            int h = bounds.height * CELL_SIZE + 1;
+            dungeonPanel.setPreferredSize(new Dimension(w, h));
+        }
+        // else if we only have loadedCells, we might adapt to loadedBounds
+        else if (!loadedCells.isEmpty() && loadedBounds != null) {
+            int w = loadedBounds.width * CELL_SIZE + 1;
+            int h = loadedBounds.height * CELL_SIZE + 1;
+            dungeonPanel.setPreferredSize(new Dimension(w, h));
         } else {
+            // default
             dungeonPanel.setPreferredSize(new Dimension(400, 300));
         }
         dungeonPanel.revalidate();
         dungeonPanel.repaint();
     }
 
-    /**
-     * A custom panel that draws the dungeon/fitter's cells.
-     */
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //               RENDER PANEL
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     private class DungeonPanel extends JPanel {
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
 
-            // If we have no fitter or bounds, no map to draw
-            if (fitter == null || bounds == null) {
-                return;
+            if (fitter != null && bounds != null) {
+                // We have an actively fitted layout. Draw from the fitter's cells.
+                drawFitterCells(g);
+            } else if (!loadedCells.isEmpty() && loadedBounds != null) {
+                // We have a loaded layout from JSON, but haven't re-fitted.
+                // Draw from loaded cells.
+                drawLoadedCells(g);
+            } else {
+                // Nothing to show
+                g.setColor(Color.DARK_GRAY);
+                g.drawString("No layout to display. Generate or load + fit the dungeon.", 20, 20);
             }
+        }
 
-            // We'll combine:
-            //  - The cells from fitter (fitter.getAllCells())
-            //  - The "loadedCells" if we have any
-            // so we can see them even if we didn't re-run BFS, etc.
-            // We'll unify them in a map by (x,y).
-            // Because we can't directly inject them into the fitter's private map
-            // unless we modify the fitter's code.
-
-            // Build a combined lookup
-            // Prefer the fitter's cell if it exists; otherwise use loadedCells
-            java.util.Map<Point, GridCell> drawMap = new java.util.HashMap<>();
-            for (GridCell c : fitter.getAllCells()) {
-                drawMap.put(c.getCoordinate(), c);
-            }
-            for (GridCell c : loadedCells) {
-                drawMap.put(c.getCoordinate(), c);
-            }
-
-            // Now draw from bounding rectangle
+        private void drawFitterCells(Graphics g) {
+            // We'll just loop over the bounding rect
             for (int row = 0; row < bounds.height; row++) {
                 for (int col = 0; col < bounds.width; col++) {
                     int xGrid = bounds.x + col;
                     int yGrid = bounds.y + row;
 
-                    Point pt = new Point(xGrid, yGrid);
-                    GridCell cell = drawMap.get(pt);
-
-                    GridCell.CellType type = GridCell.CellType.EMPTY;
-                    if (cell != null) {
-                        type = cell.getCellType();
-                    }
-
-                    Color fillColor;
-                    switch (type) {
-                        case ROOM -> fillColor = new Color(220, 220, 220); // light gray
-                        case CORRIDOR -> fillColor = new Color(200, 200, 255); // light blue
-                        default -> fillColor = new Color(48, 48, 48); // dark gray
-                    }
+                    // Find cell if it exists
+                    GridCell cell = findCell(fitter.getAllCells(), xGrid, yGrid);
+                    GridCell.CellType cellType = (cell != null)
+                            ? cell.getCellType()
+                            : GridCell.CellType.EMPTY;
 
                     int px = col * CELL_SIZE;
                     int py = row * CELL_SIZE;
-                    g.setColor(fillColor);
+
+                    Color fill = switch (cellType) {
+                        case ROOM -> new Color(220, 220, 220);
+                        case CORRIDOR -> new Color(200, 200, 255);
+                        default -> new Color(48, 48, 48);
+                    };
+                    g.setColor(fill);
                     g.fillRect(px, py, CELL_SIZE, CELL_SIZE);
 
                     g.setColor(Color.BLACK);
@@ -433,12 +416,61 @@ public class DungeonGridViewer extends JFrame {
                 }
             }
         }
+
+        private void drawLoadedCells(Graphics g) {
+            // We'll loop over loadedBounds
+            for (int row = 0; row < loadedBounds.height; row++) {
+                for (int col = 0; col < loadedBounds.width; col++) {
+                    int xGrid = loadedBounds.x + col;
+                    int yGrid = loadedBounds.y + row;
+
+                    // find a matching loaded cell if it exists
+                    GridCellDto dto = findLoadedCell(xGrid, yGrid);
+                    String cellType = (dto != null) ? dto.cellType : "EMPTY";
+
+                    int px = col * CELL_SIZE;
+                    int py = row * CELL_SIZE;
+
+                    Color fill;
+                    switch (cellType) {
+                        case "ROOM" -> fill = new Color(220, 220, 220);
+                        case "CORRIDOR" -> fill = new Color(200, 200, 255);
+                        default -> fill = new Color(48, 48, 48);
+                    }
+                    g.setColor(fill);
+                    g.fillRect(px, py, CELL_SIZE, CELL_SIZE);
+
+                    g.setColor(Color.BLACK);
+                    g.drawRect(px, py, CELL_SIZE, CELL_SIZE);
+                }
+            }
+        }
+
+        private GridCell findCell(Collection<GridCell> cells, int x, int y) {
+            for (GridCell c : cells) {
+                if (c.getCoordinate().x == x && c.getCoordinate().y == y) {
+                    return c;
+                }
+            }
+            return null;
+        }
+
+        private GridCellDto findLoadedCell(int x, int y) {
+            for (GridCellDto dto : loadedCells) {
+                if (dto.x == x && dto.y == y) {
+                    return dto;
+                }
+            }
+            return null;
+        }
     }
 
-    // Example MAIN method to launch the viewer:
+    // Example main
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
+            // Create the generator
             AdvancedDungeonGenerator generator = new AdvancedDungeonGenerator();
+            // Launch viewer
             new DungeonGridViewer(generator);
         });
     }
